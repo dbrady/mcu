@@ -116,6 +116,7 @@ void writeWord(char *display) {
     selectDigit(i+1);
     writeDigit(alphafonttable[display[i]]);
     delay(1);
+    clear();
   }
 }
 
