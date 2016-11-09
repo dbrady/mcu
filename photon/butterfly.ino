@@ -69,7 +69,7 @@
 // WKP -> DIGIT_SELECT_A
 // RX  -> DIGIT_SELECT_B
 // TX  -> DIGIT_SELECT_C
-
+#include "14seg_font.h"
 
 int SEGMENTS[] = { D0, D1, D2, D3, D4, D5, D6, D7, /* A-G2 */
                    A0, A1, A2, A3, A4, A5, A6 };
@@ -107,6 +107,15 @@ void selectDigit(int digit) {
 void writeDigit(uint16_t digit) {
   for(int i=0; i<NUM_SEGMENTS; i++) {
     digitalWrite(SEGMENTS[i], ((digit>>i)&1) ? ON : OFF );
+  }
+}
+
+// buffer underrun yourself all you want lol
+void writeWord(char *display) {
+  for(int i=0; i<NUM_DIGITS; i++) {
+    selectDigit(i+1);
+    writeDigit(alphafonttable[display[i]]);
+    delay(1);
   }
 }
 
@@ -159,6 +168,16 @@ void setup() {
   }
   clear();
   delay(200);
+  for(int i=0; i<500; i++) {
+    writeWord("Butt  ");
+    delay(1);
+  }
+  for(int i=0; i<500; i++) {
+    writeWord(" erfly");
+    delay(1);
+  }
+  clear();
+  delay(500);
 }
 
 uint16_t butterfly[] = {
@@ -173,16 +192,27 @@ uint16_t butterfly[] = {
 
 int pos=0;
 
+#define LOCKSTEP_MODE 1
+
 void loop() {
   for(int i=0; i<NUM_DIGITS; i++) {
     pos = (pos + 1) % NUM_DIGITS;
     // draw butterfly at rest
     selectDigit(pos+1);
     writeDigit(butterfly[0]);
+#ifdef LOCKSTEP_MODE
+    delay(200);
+#else
     delay(400);
+#endif
 
     // flap!
     writeDigit(butterfly[1]);
+#ifdef LOCKSTEP_MODE
+    delay(50);
+    selectDigit(pos+2);
+    delay(50);
+#else
     delay(15);
 
     // gliiiiide random distance
@@ -194,5 +224,6 @@ void loop() {
       delay(15+k*30);
     }
     delay(200);
+#endif
   }
 }
