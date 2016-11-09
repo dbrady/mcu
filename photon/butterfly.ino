@@ -117,6 +117,7 @@ void writeWord(char *display) {
     writeDigit(alphafonttable[display[i]]);
     delay(1);
     clear();
+    delay(1);
   }
 }
 
@@ -193,7 +194,7 @@ uint16_t butterfly[] = {
 
 int pos=0;
 
-#define LOCKSTEP_MODE 1
+// #define LOCKSTEP_MODE 1
 
 void loop() {
   for(int i=0; i<NUM_DIGITS; i++) {
