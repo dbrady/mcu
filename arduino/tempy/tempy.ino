@@ -68,8 +68,54 @@
 
 Adafruit_7segment matrix = Adafruit_7segment();
 
-const int SAMPLES=500;
-unsigned int samples[SAMPLES];
+// This sensor is a noisy little effer. I want to throw away the
+// highest and lowest readings, then average the remaining median
+// values. Say I want to average 50 "cleaned" readings, and those
+// cleaned readings are 10 readings with the highest and lowest 3
+// readings taken away. To keep myself from tripping up, we're going
+// to take 10+6 readings, THEN throw away the 6 outliers. That leaves
+// us with:
+const int SAMPLES=50; // total number of culled readings to average
+const int BATCH_SIZE=10; // size of batch AFTER culls taken away
+const int CULLS=2; // times to throw away min/max from each batch
+
+// "read":     average reading for this sample after cleaning
+// "cleaning": read the samples in batches, and remove min/max
+//             values to try to reduce spurious noise
+typedef enum {
+    SCIENTIFIC_UNITS,
+    BURMESE_UNITS,
+    ADC_UNITS,
+    DISPLAY_READ_ERROR_RATE, // Show best max - worst min for this read
+    DISPLAY_TRANSIENT_ERROR_RATE, // Difference between sequential displays
+    DISPLAY_DRIFT_RATE, // Difference over a longer term (how long? No
+                        // RTC on this baby. Could probably eyeball it
+                        // with millis() over an hour at a time tho.)
+    DISPLAY_MAX, // show the highest reading from the sample
+    DISPLAY_MIN, // show the lowest reading from the sample
+
+    DISPLAY_DAILY_HIGH_READ, // show
+
+    SET_DATA_RATE, // how often to update the display (work in
+                   // progress, nothing like realtime, especially now
+                   // that we're throwing delays inside the read loop)
+                   // (TODO: This could be tightened up by ending each
+                   // loop with a framerate-dependent delay, e.g. if
+                   // data rate is 5Hz (200ms per frame) and we spent
+                   // 162ms farting around getting data, we would say
+                   // delay(38), etc.
+
+    SET_BRIGHTNESS,
+    SET_SAMPLE_SIZE, // total number of reads before we sign off on a
+                     // batch. Each read may have up to BATCH_SIZE-1
+                     // extra reads in it
+    SET_BATCH_SIZE, // number of reads in a batch before culling
+    SET_CULLS, // how many extra pairs to add to each batch, then
+               // remove the highest and lowest values from each batch
+    TURD, // display a rude word
+} MODES;
+
+MODES mode = BURMESE_UNITS;
 
 const uint8_t digits[10] = {
     0b00111111, // 0
@@ -93,27 +139,26 @@ const uint8_t  D = 0b01011110; // d
 const uint8_t  S = 0b01101101; // S
 const uint8_t  B = 0b01111100; // b
 
-void setup() {
-    // TODO: Find out if Arduino has memfill or zeromemory
-    for (int i=0; i<SAMPLES; i++) {
-        samples[i] = 0;
-    }
-
-#ifndef __AVR_ATtiny85__
-    // Serial.begin(9600);
-    Serial.println("7 Segment Backpack Test");
-#endif
-    matrix.begin(0x70);
-
-
-    // analogReference(EXTERNAL);
+void displayRudeWord(void) {
     // write rude word
     matrix.writeDigitRaw(0, 0b01111000); // t
     matrix.writeDigitRaw(1, 0b00011100); // u
     // digit 2 is the colon
     matrix.writeDigitRaw(3, 0b01010000); // r
-    matrix.writeDigitRaw(4, 0b01011110); // d... because I'm 12. Shut up.
+    matrix.writeDigitRaw(4, 0b01011110); // d... because I'm 12. Shut
+                                         // up.
+    matrix.writeDisplay();
+}
 
+void setup() {
+#ifndef __AVR_ATtiny85__
+    // Serial.begin(9600);
+    // Serial.println("7 Segment Backpack Test");
+#endif
+    matrix.begin(0x70);
+
+    displayRudeWord();
+    // analogReference(EXTERNAL);
     matrix.writeDisplay();
     for(int i=0; i<3; i++) {
         for(int j=0; j<16; j++) {
@@ -130,34 +175,41 @@ void setup() {
 }
 
 void loop() {
-    static int sample_number = SAMPLES-1;
-    sample_number = (sample_number + 1) % SAMPLES;
-
-    samples[sample_number] = analogRead(A0);
-
+    // take a batch of ten, discard lowest/highest, keep rest.
+    unsigned int sample_count = 0;
     unsigned int sum = 0;
-    unsigned int min = samples[0];
-    unsigned int max = samples[0];
-
-    for (int i=0; i<SAMPLES; ++i) {
-        sum += samples[i];
-        if (samples[i] > max) { max = samples[i]; }
-        if (samples[i] < min) { min = samples[i]; }
+    unsigned int min = 0;
+    unsigned int max = 0;
+    unsigned int sample = 0;
+    while (sample_count < SAMPLES) {
+        for(int i=0; i<BATCH_SIZE + (CULLS*2); i++) {
+            sample = analogRead(A0);
+            sum += sample;
+        }
+        for (int i=0; i<CULLS; i++) {
+            if (i==0) {
+                min = max = sample;
+            } else {
+                if (min < sample) { min = sample; }
+                if (max > sample) { max = sample; }
+            }
+            sum -= (min + max);
+        }
+        sample_count += BATCH_SIZE;
+        // delaying between reads DOES seem to help stabilize things.
+        delay(1);
     }
 
     // TODO: figure out how to int2float in Arduino or C++
-    float average = ((float)sum)/SAMPLES;
-    unsigned int fixpoint_averaged = average * 10;
+    float average = ((float)sum)/sample_count;
     float tempC = (average * 500)/1024;
     float tempF = 32 + (tempC * 9) / 5;
     // Serial.print("Temp Sensor: ");
-    // Serial.print(samples[sample_number]);
+    // Serial.print(sample);
     // Serial.print(", Min: ");
     // Serial.print(min);
     // Serial.print(", Max: ");
     // Serial.print(max);
-    // Serial.print(", Running Average: ");
-    // Serial.print(fixpoint_averaged);
     // Serial.print(", TempC: ");
     // Serial.print(tempC);
     // Serial.print(", TempF: ");
@@ -165,7 +217,53 @@ void loop() {
     // Serial.println();
 
     // write display
-    matrix.print(tempC);
+    // matrix.print(tempC);
+
+    // Okay, let's write this display in C here.
+    unsigned int value;
+    switch(mode) {
+    case SCIENTIFIC_UNITS:
+        mode = BURMESE_UNITS;
+        value = tempC * 10;
+        if (value >= 100) { // over 10C?
+            matrix.writeDigitRaw(0, digits[value / 100]);
+            value = value % 100;
+        } else {
+            matrix.writeDigitRaw(0, 0);
+        }
+
+        // the tens value is the degrees
+        matrix.writeDigitRaw(1, DP | digits[value / 10]);
+        // the ones values is the tenths
+        matrix.writeDigitRaw(3, digits[value % 10]);
+        matrix.writeDigitRaw(4, C);
+        break;
+
+    case BURMESE_UNITS:
+        mode = TURD;
+        value = tempF * 10;
+        // if temp over 100F... *shrug*
+        if (tempF >= 1000) { tempF -= 1000; }
+
+        if (value >= 100) { // over 10C?
+            matrix.writeDigitRaw(0, digits[value / 100]);
+            value = value % 100;
+        } else {
+            matrix.writeDigitRaw(0, 0);
+        }
+
+        // the tens value is the degrees
+        matrix.writeDigitRaw(1, DP | digits[value / 10]);
+        // the ones values is the tenths
+        matrix.writeDigitRaw(3, digits[value % 10]);
+        matrix.writeDigitRaw(4, F);
+        break;
+
+    case TURD:
+        mode = SCIENTIFIC_UNITS;
+        displayRudeWord();
+        break;
+   }
 
     // write rude word
     // matrix.writeDigitRaw(0, 0b01111000); // t
@@ -175,5 +273,5 @@ void loop() {
     // matrix.writeDigitRaw(4, 0b01011110); // d... because I'm 12. Shut up.
 
     matrix.writeDisplay();
-    delay(1);
+    delay(2000);
 }
