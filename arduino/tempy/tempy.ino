@@ -25,9 +25,9 @@
 // - [X] Figure out dimming! -> matrix.setBrightness(byte) 0..15. 0 is
 // dimmest--BUT NOT OFF.
 
-// - [ ] Add a data cleanup mode (read 10, drop min and max)
+// - [X] Add a data cleanup mode (read 10, drop min and max)
 
-// - [ ] Figure out how to write the temp scale (probably need to
+// - [X] Figure out how to write the temp scale (probably need to
 //       write raw bits, because I want to turn on the decimal AND
 //       have it put the "C" or "F" on there--though alternately I
 //       could jam in little LEDs for each of the output modes)
