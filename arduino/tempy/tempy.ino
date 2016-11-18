@@ -5,7 +5,7 @@
 // For this project I am using an Arduino UNO to drive a clock display
 // mounted on an HT16k33 over I2C, and reading a temperature sensor on
 // A0. I have a temp sensor from my arduino starter kit, but I also
-// have an LM78 precision thermal voltage regulator that I want to see
+// have an LM35 precision thermal voltage regulator that I want to see
 // if I can suss out. It likes to sit across 4v-30v and emits
 // regulated voltage at 10mV per degree C. At 100C it emits 1V, etc.
 
@@ -21,17 +21,17 @@
 // order. (The temp sensor could also be old and sloppy, but reads
 // just fine on a slow voltmeter, so there you go.)
 
+// MUCH RESEARCH, SUCH ANALOG, VERY WOW: Turns out the LM35 and TMP36 sensors
+// are *analog*, and even a 10cm jumper wire is enough of an antenna to pick up
+// shedloads of noise. I switched to a DS18B20 digital temperature sensor that
+// communicates via the OneWire protocol. Temps immediately became stable and
+// rock-solid. YAY! WIN! Using an analog sensor can probably still be made to
+// work but I would want to shield the ever living crap out of the connector:
+// shorten the leads (ideally direct-connect to arduino), shielding around BOTH
+// the ground and analog wires, buffer caps and pull-up resistors at both ends,
+// etc.
+
 // TODO:
-// - [X] Figure out dimming! -> matrix.setBrightness(byte) 0..15. 0 is
-// dimmest--BUT NOT OFF.
-
-// - [X] Add a data cleanup mode (read 10, drop min and max)
-
-// - [X] Figure out how to write the temp scale (probably need to
-//       write raw bits, because I want to turn on the decimal AND
-//       have it put the "C" or "F" on there--though alternately I
-//       could jam in little LEDs for each of the output modes)
-
 // - [ ] Add pushbutton to switch modes:
 //       C - Scientific               eg. " 20.6C"
 //       F - Burmese/Liberian         eg. " 69.5F"
@@ -44,80 +44,42 @@
 //              samples.
 //          The Photon could probably handle 50k.
 //          The Digispark literally may not have ANY. Eeep.
-
-// until enough samples acquired: show rXXX where XXX is number of
-// samples that have been read. r001, r002, r003 etc.
+//
+/// - [ ] Add a brightness toggle button
 
 // 8888
-// (*) (*)
-//
-// ( ) Scientific Units
-// ( ) Burmese/Liberian Units
-// ( ) ADC Sensor Units
-// ( ) Set Data Rate
-// ( ) Set Sample Size
-// ( ) Set Brightness
-
-// Oooh, toggles? Raw/Average
-// LOL, and data rate could be a potentiometer
+// (O) Toggle Scientific/Burmese/Rudeword/Cycle
+// (O) Toggle Brightness
 
 
 #include <Wire.h>
 #include "Adafruit_LEDBackpack.h"
 #include "Adafruit_GFX.h"
+#include <OneWire.h>
+#include <DallasTemperature.h>
+
+
+// Data wire is plugged into port 2 on the Arduino (D2)
+#define ONE_WIRE_BUS 2
+
+// Setup a oneWire instance to communicate with any OneWire devices (not just Maxim/Dallas temperature ICs)
+OneWire oneWire(ONE_WIRE_BUS);
+
+// Pass our oneWire reference to Dallas Temperature.
+DallasTemperature sensors(&oneWire);
 
 Adafruit_7segment matrix = Adafruit_7segment();
 
-// This sensor is a noisy little effer. I want to throw away the
-// highest and lowest readings, then average the remaining median
-// values. Say I want to average 50 "cleaned" readings, and those
-// cleaned readings are 10 readings with the highest and lowest 3
-// readings taken away. To keep myself from tripping up, we're going
-// to take 10+6 readings, THEN throw away the 6 outliers. That leaves
-// us with:
-const int SAMPLES=50; // total number of culled readings to average
-const int BATCH_SIZE=10; // size of batch AFTER culls taken away
-const int CULLS=2; // times to throw away min/max from each batch
-
-// "read":     average reading for this sample after cleaning
-// "cleaning": read the samples in batches, and remove min/max
-//             values to try to reduce spurious noise
 typedef enum {
     SCIENTIFIC_UNITS,
     BURMESE_UNITS,
-    ADC_UNITS,
-    DISPLAY_READ_ERROR_RATE, // Show best max - worst min for this read
-    DISPLAY_TRANSIENT_ERROR_RATE, // Difference between sequential displays
-    DISPLAY_DRIFT_RATE, // Difference over a longer term (how long? No
-                        // RTC on this baby. Could probably eyeball it
-                        // with millis() over an hour at a time tho.)
-    DISPLAY_MAX, // show the highest reading from the sample
-    DISPLAY_MIN, // show the lowest reading from the sample
-
-    DISPLAY_DAILY_HIGH_READ, // show
-
-    SET_DATA_RATE, // how often to update the display (work in
-                   // progress, nothing like realtime, especially now
-                   // that we're throwing delays inside the read loop)
-                   // (TODO: This could be tightened up by ending each
-                   // loop with a framerate-dependent delay, e.g. if
-                   // data rate is 5Hz (200ms per frame) and we spent
-                   // 162ms farting around getting data, we would say
-                   // delay(38), etc.
-
     SET_BRIGHTNESS,
-    SET_SAMPLE_SIZE, // total number of reads before we sign off on a
-                     // batch. Each read may have up to BATCH_SIZE-1
-                     // extra reads in it
-    SET_BATCH_SIZE, // number of reads in a batch before culling
-    SET_CULLS, // how many extra pairs to add to each batch, then
-               // remove the highest and lowest values from each batch
     TURD, // display a rude word
 } MODES;
 
 MODES mode = BURMESE_UNITS;
 
-const uint8_t digits[10] = {
+const uint8_t digits[37] = {
     0b00111111, // 0
     0b00000110, // 1
     0b01011011, // 2
@@ -128,150 +90,174 @@ const uint8_t digits[10] = {
     0b00000111, // 7
     0b01111111, // 8
     0b01100111, // 9
+    0b00000000, // <SPC>
+    0b01110111, // A
+    0b01111100, // b
+    0b00111001, // C
+    0b01011110, // d
+    0b01111001, // E
+    0b01110001, // F
+    0b00111101, // G
+    0b01110100, // h
+    0b00000110, // I
+    0b00011110, // J
+    0b01010011, // ? K
+    0b00111000, // L
+    0b01010011, // ? M
+    0b01010100, // n
+    0b01011100, // o
+    0b01110011, // P
+    0b01010011, // ? Q
+    0b01010000, // r
+    0b01101101, // S
+    0b01111000, // t
+    0b00011100, // u
+    0b01010011, // ? V
+    0b01010011, // ? W
+    0b01010011, // ? X
+    0b01101110, // y
+    0b01010011, // ? Z
 };
 
 const uint8_t DP = 0b10000000; // .
-
-const uint8_t  C = 0b00111001; // C
-const uint8_t  F = 0b01110001; // F
-const uint8_t  A = 0b01110111; // A
-const uint8_t  D = 0b01011110; // d
-const uint8_t  S = 0b01101101; // S
 const uint8_t  B = 0b01111100; // b
 
+
+void displayWord(char *word) {
+  int idx;
+  uint8_t ch;
+
+  int i,j;
+  for (i=0, j=0; i<4; i++,j++) {
+    if (i==2) { j++; }
+    ch = word[i];
+    if (ch == ' ') {
+      idx = 10;
+    } else if (ch >= '0' && ch <= '9') {
+      idx = ch - '0';
+    } else if (ch >= 'a' && ch <= 'z') {
+      idx = ch - 'a' + 11;
+    }
+    matrix.writeDigitRaw(j, digits[idx]);
+  }
+  matrix.writeDisplay();
+}
+
 void displayRudeWord(void) {
-    // write rude word
-    matrix.writeDigitRaw(0, 0b01111000); // t
-    matrix.writeDigitRaw(1, 0b00011100); // u
-    // digit 2 is the colon
-    matrix.writeDigitRaw(3, 0b01010000); // r
-    matrix.writeDigitRaw(4, 0b01011110); // d... because I'm 12. Shut
-                                         // up.
-    matrix.writeDisplay();
+  char *tourettes[] = {
+    "fart",
+    "turd",
+    "boob",
+    "shat",
+    "tits",
+    "poop",
+    "crap",
+    "dolt",
+  };
+
+  displayWord(tourettes[random(sizeof(tourettes)/sizeof(tourettes[0]))]);
+}
+
+void clear(void) {
+  for(int i=0; i<5; i++) {
+    matrix.writeDigitRaw(i, 0);
+  }
+  matrix.writeDisplay();
 }
 
 void setup() {
+  // TODO: make Serial begin/print/println macros for Debug vs ATtiny85 vs Release
 #ifndef __AVR_ATtiny85__
-    // Serial.begin(9600);
-    // Serial.println("7 Segment Backpack Test");
+  Serial.begin(9600);
+  Serial.println("tempy - THERMOMETER OF DOOOOOM");
 #endif
-    matrix.begin(0x70);
+  sensors.begin();
+  matrix.begin(0x70);
 
+  // analogReference(EXTERNAL);
+  matrix.writeDisplay();
+  for(int i=0; i<3; i++) {
     displayRudeWord();
-    // analogReference(EXTERNAL);
-    matrix.writeDisplay();
-    for(int i=0; i<3; i++) {
-        for(int j=0; j<16; j++) {
-            matrix.setBrightness(j);
-            delay(10);
-        }
-        for(int j=15; j>=0; j--) {
-            matrix.setBrightness(j);
-            delay(10);
-        }
+    for(int j=0; j<16; j++) {
+      matrix.setBrightness(j);
+      delay(10);
     }
-    matrix.setBrightness(15);
-    delay(500);
+    for(int j=15; j>=0; j--) {
+      matrix.setBrightness(j);
+      delay(10);
+    }
+  }
+  matrix.setBrightness(15);
+  delay(500);
+  matrix.setBrightness(15);
+  mode = SCIENTIFIC_UNITS;
 }
 
 void loop() {
-    // take a batch of ten, discard lowest/highest, keep rest.
-    unsigned int sample_count = 0;
-    unsigned int sum = 0;
-    unsigned int min = 0;
-    unsigned int max = 0;
-    unsigned int sample = 0;
-    while (sample_count < SAMPLES) {
-        for(int i=0; i<BATCH_SIZE + (CULLS*2); i++) {
-            sample = analogRead(A0);
-            sum += sample;
-        }
-        for (int i=0; i<CULLS; i++) {
-            if (i==0) {
-                min = max = sample;
-            } else {
-                if (min < sample) { min = sample; }
-                if (max > sample) { max = sample; }
-            }
-            sum -= (min + max);
-        }
-        sample_count += BATCH_SIZE;
-        // delaying between reads DOES seem to help stabilize things.
-        delay(1);
+  // call sensors.requestTemperatures() to issue a global temperature
+  // request to all devices on the bus
+  Serial.print("Requesting temperatures...");
+  sensors.requestTemperatures(); // Send the command to get temperatures
+  Serial.println("DONE");
+  // After we got the temperatures, we can print them here.
+  // We use the function ByIndex, and as an example get the temperature from the first sensor only.
+  Serial.print("Temperature for the device 1 (index 0) is: ");
+  float tempC = sensors.getTempCByIndex(0);
+  float tempF = (tempC * 9) / 5 + 32;
+  Serial.println(tempC);
+
+  // Okay, let's write this display in C here.
+  // TODO: Unsigned? Turns out temps go negative in Utah in the winter...
+  unsigned int value;
+  clear();
+  switch(mode) {
+  case SCIENTIFIC_UNITS:
+    mode = BURMESE_UNITS;
+    Serial.print("Trying to slam out tempC: "); Serial.println(tempC);
+    value = tempC * 10;
+    Serial.print("  Value: "); Serial.println(value);
+    if (value >= 100) { // over 10C?
+      Serial.print("  Writing tens: "); Serial.println(value / 100);
+      matrix.writeDigitRaw(0, digits[value / 100]);
+      value = value % 100;
+      Serial.print("  Setting Value to mod 100https://github.com/milesburton/Arduino-Temperature-Control-Library/blob/master/examples/Simple/Simple.pde: "); Serial.println(value);
+    } else {
+      // matrix.writeDigitRaw(0, 0);
     }
 
-    // TODO: figure out how to int2float in Arduino or C++
-    float average = ((float)sum)/sample_count;
-    float tempC = (average * 500)/1024;
-    float tempF = 32 + (tempC * 9) / 5;
-    // Serial.print("Temp Sensor: ");
-    // Serial.print(sample);
-    // Serial.print(", Min: ");
-    // Serial.print(min);
-    // Serial.print(", Max: ");
-    // Serial.print(max);
-    // Serial.print(", TempC: ");
-    // Serial.print(tempC);
-    // Serial.print(", TempF: ");
-    // Serial.print(tempF);
-    // Serial.println();
+    // the tens value is the degrees
+    matrix.writeDigitRaw(1, DP | digits[value / 10]);
+    // the ones values is the tenths
+    matrix.writeDigitRaw(3, digits[value % 10]);
+    matrix.writeDigitRaw(4, digits[13]);
+    break;
 
-    // write display
-    // matrix.print(tempC);
+  case BURMESE_UNITS:
+    mode = TURD;
+    value = tempF * 10;
+    // if temp over 100F... *shrug*
+    while (tempF >= 1000) { tempF -= 1000; }
 
-    // Okay, let's write this display in C here.
-    unsigned int value;
-    switch(mode) {
-    case SCIENTIFIC_UNITS:
-        mode = BURMESE_UNITS;
-        value = tempC * 10;
-        if (value >= 100) { // over 10C?
-            matrix.writeDigitRaw(0, digits[value / 100]);
-            value = value % 100;
-        } else {
-            matrix.writeDigitRaw(0, 0);
-        }
+    if (value >= 100) { // over 10C?
+      matrix.writeDigitRaw(0, digits[value / 100]);
+      value = value % 100;
+    } else {
+      // matrix.writeDigitRaw(0, 0);
+    }
 
-        // the tens value is the degrees
-        matrix.writeDigitRaw(1, DP | digits[value / 10]);
-        // the ones values is the tenths
-        matrix.writeDigitRaw(3, digits[value % 10]);
-        matrix.writeDigitRaw(4, C);
-        break;
+    // the tens value is the degrees
+    matrix.writeDigitRaw(1, DP | digits[value / 10]);
+    // the ones values is the tenths
+    matrix.writeDigitRaw(3, digits[value % 10]);
+    matrix.writeDigitRaw(4, digits[16]);
+    break;
 
-    case BURMESE_UNITS:
-        mode = TURD;
-        value = tempF * 10;
-        // if temp over 100F... *shrug*
-        if (tempF >= 1000) { tempF -= 1000; }
+  case TURD:
+    mode = SCIENTIFIC_UNITS;
+    displayRudeWord();
+    break;
+  }
 
-        if (value >= 100) { // over 10C?
-            matrix.writeDigitRaw(0, digits[value / 100]);
-            value = value % 100;
-        } else {
-            matrix.writeDigitRaw(0, 0);
-        }
-
-        // the tens value is the degrees
-        matrix.writeDigitRaw(1, DP | digits[value / 10]);
-        // the ones values is the tenths
-        matrix.writeDigitRaw(3, digits[value % 10]);
-        matrix.writeDigitRaw(4, F);
-        break;
-
-    case TURD:
-        mode = SCIENTIFIC_UNITS;
-        displayRudeWord();
-        break;
-   }
-
-    // write rude word
-    // matrix.writeDigitRaw(0, 0b01111000); // t
-    // matrix.writeDigitRaw(1, 0b00011100); // u
-    // digit 2 is the colon
-    // matrix.writeDigitRaw(3, 0b01010000); // r
-    // matrix.writeDigitRaw(4, 0b01011110); // d... because I'm 12. Shut up.
-
-    matrix.writeDisplay();
-    delay(2000);
+  matrix.writeDisplay();
+  delay(1000);
 }
